@@ -129,6 +129,7 @@ GameObject:
   m_Component:
   - component: {fileID: 95439962}
   - component: {fileID: 95439963}
+  - component: {fileID: 95439964}
   m_Layer: 0
   m_Name: AudioManager
   m_TagString: Untagged
@@ -160,23 +161,44 @@ MonoBehaviour:
   m_GameObject: {fileID: 95439961}
   m_Enabled: 1
   m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0b81ff7f5a662534d945339d8c74e8f7, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _qlabIP: 127.0.0.1
+  _port: 53000
+  _preStartBgmCue: PreStart
+  _gameplayBgmCue: Gameplay
+  _countdownLoopCue: Countdown
+  _playerBecameActiveCue: PlayerActive
+  _growPickupCue: Grow
+  _paintBurstPickupCue: PaintBurst
+  _cleanseBurstPickupCue: CleanseBurst
+--- !u!114 &95439964
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 95439961}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 485ac364ace7b444195de89179363f49, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
   _bgmSource: {fileID: 0}
   _countdownSource: {fileID: 0}
   _sfxSource: {fileID: 0}
-  _bgmVolume: 0.4
-  _countdownVolume: 0.6
+  _bgmVolume: 1
+  _countdownVolume: 1
   _sfxVolume: 1
   _preStartBgm: {fileID: 0}
-  _gameplayBgm: {fileID: 8300000, guid: 3ea4b5d12893bf94bb0abae24d8d01f4, type: 3}
-  _countdownLoopSfx: {fileID: 8300000, guid: c86cc792b9b78b946ac3d854e0166a9c, type: 3}
-  _playerBecameActiveSfx: {fileID: 8300000, guid: 0c1691f8dc3891c419d398299c4ec4d3, type: 3}
-  _roundEndedSfx: {fileID: 8300000, guid: 4875460f0c3c69a4f802ecce5fada21c, type: 3}
-  _growPickupSfx: {fileID: 8300000, guid: 447c6dc05070c144297e256ab9045a27, type: 3}
-  _paintBurstPickupSfx: {fileID: 8300000, guid: 6449345a5be9bb449a283321959c0468, type: 3}
-  _cleanseBurstPickupSfx: {fileID: 8300000, guid: 52ca9e56a39449f4287b9d1613617faa, type: 3}
+  _gameplayBgm: {fileID: 0}
+  _countdownLoopSfx: {fileID: 0}
+  _playerBecameActiveSfx: {fileID: 0}
+  _roundEndedSfx: {fileID: 0}
+  _growPickupSfx: {fileID: 0}
+  _paintBurstPickupSfx: {fileID: 0}
+  _cleanseBurstPickupSfx: {fileID: 0}
 --- !u!1 &158039892
 GameObject:
   m_ObjectHideFlags: 0
@@ -1274,6 +1296,7 @@ MonoBehaviour:
   _recountScoresFromOwnerMap: 1
   _enableDebugFillHotkeys: 1
   _autoAssignReceivedIdsAsPlayers: 0
+  _useTdSignedStableIds: 1
   _useDualDisplay: 1
   _useRenderTextures: 0
   _renderTextureSize: {x: 3840, y: 2160}
@@ -1294,7 +1317,7 @@ MonoBehaviour:
   _scoreTextP4: {fileID: 1537928861}
   _scoreHintText: {fileID: 1800919362}
   _winnerText: {fileID: 401919454}
-  _audioManager: {fileID: 95439963}
+  _audioManager: {fileID: 0}
 --- !u!114 &1059215023
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2026,7 +2049,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   _receiver: {fileID: 1059215022}
-  _audioManager: {fileID: 95439963}
+  _audioManager: {fileID: 0}
   _spawnRoot: {fileID: 1484986072}
   _powerupPrefabs:
   - {fileID: 7348210320337664839, guid: 1b9774de0730663449f67827d12ee338, type: 3}
