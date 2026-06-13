@@ -550,10 +550,7 @@ public class TDTableReceiverBase : MonoBehaviour
             _wallCamera.targetTexture  = _wallOutput;
             _floorCamera.targetTexture = _floorOutput;
         }
-        else
-        {
-            _wallCamera.targetTexture  = null;
-            _floorCamera.targetTexture = null;
-        }
+        // When _useRenderTextures is false, leave camera targetTextures as-is
+        // so manually assigned RenderTextures (e.g. for NDI output) are preserved.
     }
 }

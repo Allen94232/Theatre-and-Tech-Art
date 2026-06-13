@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
+using UnityEngine.UI;
 
 // ─── Data classes ────────────────────────────────────────────────────────────
 
@@ -42,6 +43,7 @@ public class AchromaGame2Controller : MonoBehaviour
     [Header("References")]
     [SerializeField] private TDTableReceiverBase    _receiver;
     [SerializeField] private TDAchromaFlowManager   _flowManager;
+    [SerializeField] private AchromaAudioManager    _audioManager;
     [SerializeField] private ColoringFloorRenderer  _floorRenderer;
     [Tooltip("Optional: wall-side Renderer whose mainTexture will be set to each level's coloured reference image")]
     [SerializeField] private Renderer _wallRenderer;
@@ -67,6 +69,10 @@ public class AchromaGame2Controller : MonoBehaviour
     [Tooltip("TextMeshPro text on the wall screen — shows restoration percentage during Game 2")]
     [SerializeField] private TMP_Text _completionText;
 
+    [Header("Floor Effects")]
+    [Tooltip("Full-screen Image on the Floor Canvas for the completion flash. Set Color Alpha to 0 in editor.")]
+    [SerializeField] private Image _floorFlashOverlay;
+
     // ── Runtime state ──
     private bool _gameRunning       = false;
     private int  _currentLevelIndex = 0;
@@ -85,6 +91,7 @@ public class AchromaGame2Controller : MonoBehaviour
     {
         if (_receiver      == null) _receiver      = FindFirstObjectByType<TDTableReceiverBase>();
         if (_flowManager   == null) _flowManager   = FindFirstObjectByType<TDAchromaFlowManager>();
+        if (_audioManager  == null) _audioManager  = FindFirstObjectByType<AchromaAudioManager>();
         if (_floorRenderer == null) _floorRenderer = FindFirstObjectByType<ColoringFloorRenderer>();
     }
 
@@ -121,6 +128,7 @@ public class AchromaGame2Controller : MonoBehaviour
             _receiver.OnPlayerLeft   += HandlePlayerLeft;
         }
 
+        _audioManager?.Game2_OnGameStart();
         LoadLevel(_currentLevelIndex);
         Debug.Log("[Game2] StartGame");
     }
@@ -137,7 +145,8 @@ public class AchromaGame2Controller : MonoBehaviour
             _receiver.OnPlayerLeft   -= HandlePlayerLeft;
         }
 
-        if (_completionText != null) _completionText.text = string.Empty;
+        if (_completionText    != null) _completionText.text    = string.Empty;
+        if (_floorFlashOverlay != null) _floorFlashOverlay.color = new Color(0f, 0f, 0f, 0f);
         Debug.Log("[Game2] EndGame");
     }
 
@@ -218,6 +227,8 @@ public class AchromaGame2Controller : MonoBehaviour
         if (_floorRenderer != null)
             _floorRenderer.ShowCompleted();
 
+        StartCoroutine(FloorCompletionFlashCo());
+        _audioManager?.Game2_OnLevelComplete();
         Debug.Log($"[Game2] Level {_currentLevelIndex + 1} complete. Waiting {levelCompletionPause}s.");
         yield return new WaitForSeconds(levelCompletionPause);
 
@@ -230,6 +241,7 @@ public class AchromaGame2Controller : MonoBehaviour
         }
         else
         {
+            _audioManager?.Game2_OnAllComplete();
             EndGame();
         }
     }
@@ -244,6 +256,27 @@ public class AchromaGame2Controller : MonoBehaviour
         _completionText.text = levels.Count > 1
             ? $"{_currentLevelIndex + 1} / {levels.Count}\n{pct}%"
             : $"{pct}%";
+    }
+
+    // ── Floor Effects ──────────────────────────────────────────────────────
+
+    // Warm white burst when the city image is fully revealed.
+    private IEnumerator FloorCompletionFlashCo()
+    {
+        if (_floorFlashOverlay == null) yield break;
+        _floorFlashOverlay.color = new Color(1f, 0.97f, 0.8f, 0.9f);
+        yield return new WaitForSeconds(0.06f);
+        float elapsed  = 0f;
+        float fadeTime = 1.0f;
+        while (elapsed < fadeTime)
+        {
+            elapsed += Time.deltaTime;
+            Color c = _floorFlashOverlay.color;
+            c.a = Mathf.Lerp(0.9f, 0f, elapsed / fadeTime);
+            _floorFlashOverlay.color = c;
+            yield return null;
+        }
+        _floorFlashOverlay.color = new Color(0f, 0f, 0f, 0f);
     }
 
     // ── Player events ──────────────────────────────────────────────────────

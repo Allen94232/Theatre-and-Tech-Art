@@ -54,15 +54,10 @@ public class TDAchromaFlowManager : MonoBehaviour
     public enum AudioMode { UnityNative, QLab }
 
     [Header("Audio")]
-    [Tooltip("UnityNative = use TDGameAudioManager (in-editor testing). QLab = use TDGameAudioManagerQlab (theatre playback).")]
+    [Tooltip("UnityNative = local AudioClips for testing. QLab = OSC to QLab for theatre.")]
     public AudioMode audioMode = AudioMode.QLab;
-    [SerializeField] private TDGameAudioManager _audioManagerNative;
-    [SerializeField] private TDGameAudioManagerQlab _audioManagerQlab;
-
-    // Read-only accessors so game controllers can retrieve the correct manager.
-    public TDGameAudioManager      AudioManagerNative => _audioManagerNative;
-    public TDGameAudioManagerQlab  AudioManagerQlab   => _audioManagerQlab;
-    public bool                    UseQLab            => audioMode == AudioMode.QLab;
+    [SerializeField] private AchromaAudioManager _audioManager;
+    public AchromaAudioManager Audio => _audioManager;
 
     [Header("Core References")]
     [SerializeField] private MonoBehaviour _receiver;
@@ -87,11 +82,11 @@ public class TDAchromaFlowManager : MonoBehaviour
             }
         }
 
-        if (_audioManagerNative == null)
-            _audioManagerNative = FindFirstObjectByType<TDGameAudioManager>();
+        if (_audioManager == null)
+            _audioManager = FindFirstObjectByType<AchromaAudioManager>();
 
-        if (_audioManagerQlab == null)
-            _audioManagerQlab = FindFirstObjectByType<TDGameAudioManagerQlab>();
+        if (_audioManager != null)
+            _audioManager.SetMode(audioMode == AudioMode.QLab);
 
         Debug.Log($"[AchromaFlowManager] Audio mode: {audioMode}");
 
@@ -259,6 +254,7 @@ public class TDAchromaFlowManager : MonoBehaviour
             case AchromaState.Story2:
             case AchromaState.Story3:
             case AchromaState.Story4:
+                _audioManager?.StopAll();
                 _gameWasRunningLastFrame = false;
                 SubscribeToStoryVideo(newState);
                 break;
@@ -280,6 +276,7 @@ public class TDAchromaFlowManager : MonoBehaviour
 
             case AchromaState.Completed:
                 UnsubscribeFromStoryVideo();
+                _audioManager?.StopAll();
                 _gameWasRunningLastFrame = false;
                 Debug.Log("[AchromaFlowManager] Achroma Game Experience Completed!");
                 break;

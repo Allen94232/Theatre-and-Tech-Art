@@ -8,6 +8,7 @@ public class AchromaGame1Controller : MonoBehaviour
     [Header("References")]
     [SerializeField] private TDTableReceiverBase _receiver;
     [SerializeField] private TDAchromaFlowManager _flowManager;
+    [SerializeField] private AchromaAudioManager _audioManager;
     [Tooltip("Renderer of the floor image — bottles spawn within its bounds, not the full arena")]
     [SerializeField] private Renderer _floorImageRenderer;
 
@@ -69,6 +70,7 @@ public class AchromaGame1Controller : MonoBehaviour
     {
         if (_receiver      == null) _receiver      = FindFirstObjectByType<TDTableReceiverBase>();
         if (_flowManager   == null) _flowManager   = FindFirstObjectByType<TDAchromaFlowManager>();
+        if (_audioManager  == null) _audioManager  = FindFirstObjectByType<AchromaAudioManager>();
         _bottleSprite = BuildCircleSprite();
     }
 
@@ -117,6 +119,7 @@ public class AchromaGame1Controller : MonoBehaviour
             _receiver.OnPlayerLeft   += HandlePlayerLeft;
         }
 
+        _audioManager?.Game1_OnGameStart();
         Debug.Log("[Game1] StartGame");
     }
 
@@ -137,6 +140,7 @@ public class AchromaGame1Controller : MonoBehaviour
             _receiver.OnPlayerLeft   -= HandlePlayerLeft;
         }
 
+        _audioManager?.Game1_OnGameComplete();
         Debug.Log("[Game1] EndGame");
     }
 
@@ -254,6 +258,7 @@ public class AchromaGame1Controller : MonoBehaviour
         _activeBottles.RemoveAt(index);
 
         _bottlesCollected = Mathf.Min(_bottlesCollected + 1, _totalBottlesRequired);
+        _audioManager?.Game1_OnBottleCollected();
         Debug.Log($"[Game1] Bottle collected {_bottlesCollected}/{_totalBottlesRequired}");
 
         if (_bottlesCollected >= _totalBottlesRequired)
