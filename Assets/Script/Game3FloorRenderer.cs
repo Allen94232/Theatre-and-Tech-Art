@@ -21,6 +21,14 @@ public class Game3FloorRenderer : MonoBehaviour
     [Range(0f, 0.30f)]
     public float holePulseMagnitude = 0.13f;
 
+    [Tooltip("Brightness of fully-formed holes relative to the original image (0 = pure black, 1 = original brightness). Lower = more visible holes.")]
+    [Range(0f, 1f)]
+    public float holeBrightness = 0.25f;
+
+    [Tooltip("Extra brightness boost at the spreading crack edge. Higher = brighter/more visible crack front.")]
+    [Range(0f, 3f)]
+    public float crackEdgeBrightness = 1.4f;
+
     // ── Private ──────────────────────────────────────────────────────────────────
     private Renderer       _renderer;
     private SpriteRenderer _spriteRenderer;
@@ -94,10 +102,9 @@ public class Game3FloorRenderer : MonoBehaviour
             float t = _blendMask[i];
             if (t < 0.001f) { _outputPixels[i] = _colorPixels[i]; continue; }
 
-            // Glowing crack-front: brightest at ~35% spread, fades as hole fully forms
             float frontGlow = 0f;
             if (t > 0.05f && t < 0.80f)
-                frontGlow = Mathf.Sin((t - 0.05f) / 0.75f * Mathf.PI) * 0.65f;
+                frontGlow = Mathf.Sin((t - 0.05f) / 0.75f * Mathf.PI) * crackEdgeBrightness;
 
             float brt = pulse * (1f + frontGlow);
 
@@ -116,8 +123,7 @@ public class Game3FloorRenderer : MonoBehaviour
         }
 
         _outputTexture.SetPixels32(_outputPixels);
-        _outputTexture.Apply();
-        if (_spriteRenderer != null) AssignOutputTexture();
+        _outputTexture.Apply(false);
     }
 
     // ── Public API ────────────────────────────────────────────────────────────────
@@ -136,9 +142,8 @@ public class Game3FloorRenderer : MonoBehaviour
 
         for (int i = 0; i < _colorPixels.Length; i++)
         {
-            // Luminance desaturation + 28% darkening for a crumbling/damaged look
             float lum  = 0.299f * _colorPixels[i].r + 0.587f * _colorPixels[i].g + 0.114f * _colorPixels[i].b;
-            byte  dark = (byte)(lum * 0.72f);
+            byte  dark = (byte)(lum * holeBrightness);
             _grayPixels[i] = new Color32(dark, dark, dark, _colorPixels[i].a);
         }
 
@@ -155,7 +160,7 @@ public class Game3FloorRenderer : MonoBehaviour
         }
 
         _outputTexture.SetPixels32(_outputPixels);
-        _outputTexture.Apply();
+        _outputTexture.Apply(false);
         AssignOutputTexture();
         _initialized = true;
     }
@@ -169,18 +174,21 @@ public class Game3FloorRenderer : MonoBehaviour
         int   res = resolution;
         int   cx  = Mathf.Clamp(Mathf.RoundToInt(uv.x * (res - 1)), 0, res - 1);
         int   cy  = Mathf.Clamp(Mathf.RoundToInt(uv.y * (res - 1)), 0, res - 1);
-        int   pr  = Mathf.Max(1, Mathf.RoundToInt(uvRadius * res));
 
-        for (int dy = -pr; dy <= pr; dy++)
+        int prX, prY;
+        GetEllipseRadii(uvRadius, out prX, out prY);
+        int prMax = Mathf.Max(prX, prY);
+
+        for (int dy = -prMax; dy <= prMax; dy++)
         {
             int py = cy + dy; if (py < 0 || py >= res) continue;
-            for (int dx = -pr; dx <= pr; dx++)
+            for (int dx = -prMax; dx <= prMax; dx++)
             {
-                if ((float)(dx * dx + dy * dy) > (float)(pr * pr)) continue;
+                float ex = (float)dx / prX, ey = (float)dy / prY;
+                if (ex * ex + ey * ey > 1f) continue;
                 int px = cx + dx; if (px < 0 || px >= res) continue;
                 int   idx  = py * res + px;
-                // Inner pixels animate faster → outward-spreading appearance
-                float norm = Mathf.Sqrt(dx * dx + dy * dy) / (float)pr;
+                float norm = Mathf.Sqrt(ex * ex + ey * ey); // 0 at center, 1 at world-space edge
                 float ls   = spd * Mathf.Lerp(2.1f, 0.65f, norm);
                 _targetMask[idx] = 1f;
                 if (ls > _animSpeed[idx]) _animSpeed[idx] = ls; // honour overlapping holes
@@ -192,6 +200,7 @@ public class Game3FloorRenderer : MonoBehaviour
     }
 
     // Triggers the color-flood-back animation. Inner pixels restore first (from-center spreading).
+    // Pixels that overlap with another surviving hole are left gray.
     public void RepairHole(int holeId)
     {
         HoleEntry e = null;
@@ -199,23 +208,42 @@ public class Game3FloorRenderer : MonoBehaviour
         if (e == null || e.done) return;
 
         e.done = true;
-        _holes.Remove(e);
+        _holes.Remove(e);  // remove first so it's excluded from the overlap check below
 
         float spd = 1f / Mathf.Max(0.05f, repairFloodDuration);
         int   res = resolution;
         int   cx  = Mathf.Clamp(Mathf.RoundToInt(e.uv.x * (res - 1)), 0, res - 1);
         int   cy  = Mathf.Clamp(Mathf.RoundToInt(e.uv.y * (res - 1)), 0, res - 1);
-        int   pr  = Mathf.Max(1, Mathf.RoundToInt(e.uvRadius * res));
 
-        for (int dy = -pr; dy <= pr; dy++)
+        int prX, prY;
+        GetEllipseRadii(e.uvRadius, out prX, out prY);
+        int prMax = Mathf.Max(prX, prY);
+
+        for (int dy = -prMax; dy <= prMax; dy++)
         {
             int py = cy + dy; if (py < 0 || py >= res) continue;
-            for (int dx = -pr; dx <= pr; dx++)
+            for (int dx = -prMax; dx <= prMax; dx++)
             {
-                if ((float)(dx * dx + dy * dy) > (float)(pr * pr)) continue;
+                float ex = (float)dx / prX, ey = (float)dy / prY;
+                if (ex * ex + ey * ey > 1f) continue;
                 int px = cx + dx; if (px < 0 || px >= res) continue;
-                int   idx  = py * res + px;
-                float norm = Mathf.Sqrt(dx * dx + dy * dy) / (float)pr;
+                int idx = py * res + px;
+
+                // Skip pixels still covered by another hole to avoid the "bitten" look
+                bool covered = false;
+                for (int h = 0; h < _holes.Count; h++)
+                {
+                    var o    = _holes[h];
+                    int ocx  = Mathf.Clamp(Mathf.RoundToInt(o.uv.x * (res - 1)), 0, res - 1);
+                    int ocy  = Mathf.Clamp(Mathf.RoundToInt(o.uv.y * (res - 1)), 0, res - 1);
+                    int oprX, oprY;
+                    GetEllipseRadii(o.uvRadius, out oprX, out oprY);
+                    float oex = (float)(px - ocx) / oprX, oey = (float)(py - ocy) / oprY;
+                    if (oex * oex + oey * oey <= 1f) { covered = true; break; }
+                }
+                if (covered) continue;
+
+                float norm = Mathf.Sqrt(ex * ex + ey * ey);
                 float ls   = spd * Mathf.Lerp(2.8f, 0.75f, norm);
                 _targetMask[idx] = 0f;
                 _animSpeed[idx]  = ls;
@@ -334,6 +362,20 @@ public class Game3FloorRenderer : MonoBehaviour
     }
 
     // ── Private Helpers ───────────────────────────────────────────────────────────
+
+    // Computes separate pixel radii for X and Y so holes render as world-space circles
+    // even when the canvas has a non-square aspect ratio (e.g. 16:9 floor projection).
+    private void GetEllipseRadii(float uvRadius, out int prX, out int prY)
+    {
+        prX = Mathf.Max(1, Mathf.RoundToInt(uvRadius * resolution));
+        if (_renderer == null) { prY = prX; return; }
+        Bounds b      = _renderer.bounds;
+        float canvasW = b.size.x;
+        float canvasH = b.size.z >= b.size.y ? b.size.z : b.size.y;
+        prY = (canvasW > 0.001f && canvasH > 0.001f)
+            ? Mathf.Max(1, Mathf.RoundToInt(uvRadius * resolution * canvasW / canvasH))
+            : prX;
+    }
 
     private void AssignOutputTexture()
     {

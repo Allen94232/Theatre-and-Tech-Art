@@ -49,6 +49,10 @@ public class TDTableReceiverBase : MonoBehaviour
     [SerializeField] RenderTexture _wallOutput;
     [SerializeField] RenderTexture _floorOutput;
 
+    [Header("Player Shader")]
+    [Tooltip("Assign the Assets/Shaders/SpriteGrayscale shader. Enables Game 1 grayscale desaturation.")]
+    [SerializeField] Shader _grayscaleShader;
+
     [Header("Scene References")]
     [SerializeField] Renderer _arenaRenderer;
     [SerializeField] Transform[] _playerMarkers = new Transform[4];
@@ -68,7 +72,9 @@ public class TDTableReceiverBase : MonoBehaviour
     readonly Vector2[] _playerPos       = new Vector2[4];
     readonly bool[]    _seenThisFrame   = new bool[4];
     readonly Vector2[] _pendingPosition = new Vector2[4];
-    Sprite _runtimeMarkerSprite;
+    Sprite   _runtimeMarkerSprite;
+    readonly Material[] _playerMaterials = new Material[4];
+    bool                _playersVisible  = true;
 
     float _markerPlaneValue;
     float _axisMinA, _axisMaxA, _axisMinB, _axisMaxB;
@@ -115,6 +121,32 @@ public class TDTableReceiverBase : MonoBehaviour
     public bool IsPlayerActive(int playerIndex) =>
         IsValidPlayerIndex(playerIndex) && _playerActive[playerIndex];
 
+    // Returns the 2D world-space bounding rectangle of the player's sprite.
+    // Falls back to a radius-based square if the marker has no SpriteRenderer.
+    public bool TryGetPlayerBounds(int slot, out Rect bounds2D)
+    {
+        bounds2D = default;
+        if (!IsValidPlayerIndex(slot) || !_playerActive[slot] ||
+            _playerMarkers == null || slot >= _playerMarkers.Length || _playerMarkers[slot] == null)
+            return false;
+
+        var sr = _playerMarkers[slot].GetComponent<SpriteRenderer>();
+        if (sr != null)
+        {
+            var b = sr.bounds;
+            bounds2D = _arenaPlane == ArenaPlane.XZ
+                ? new Rect(b.min.x, b.min.z, b.size.x, b.size.z)
+                : new Rect(b.min.x, b.min.y, b.size.x, b.size.y);
+            return true;
+        }
+
+        // Fallback: square from radius
+        var p = _playerPos[slot];
+        bounds2D = new Rect(p.x - _playerMarkerRadius, p.y - _playerMarkerRadius,
+                            _playerMarkerRadius * 2f,  _playerMarkerRadius * 2f);
+        return true;
+    }
+
     public void SetPlayerMarkerColor(int slot, Color color)
     {
         if (!IsValidPlayerIndex(slot) || _playerMarkers == null || slot >= _playerMarkers.Length || _playerMarkers[slot] == null) return;
@@ -122,6 +154,23 @@ public class TDTableReceiverBase : MonoBehaviour
         if (sr != null) { sr.color = color; return; }
         var r = _playerMarkers[slot].GetComponent<Renderer>();
         if (r != null && r.material != null) r.material.color = color;
+    }
+
+    // Sets the grayscale shader's saturation (0 = fully desaturated, 1 = natural sprite colour).
+    // Has no effect when _grayscaleShader is not assigned.
+    public void SetPlayerMarkerSaturation(int slot, float saturation)
+    {
+        if (!IsValidPlayerIndex(slot) || _playerMaterials[slot] == null) return;
+        _playerMaterials[slot].SetFloat("_Saturation", Mathf.Clamp01(saturation));
+    }
+
+    // Hides all player markers when visible=false, regardless of tracking state.
+    public void SetPlayersVisible(bool visible)
+    {
+        _playersVisible = visible;
+        if (!visible && _playerMarkers != null)
+            foreach (var m in _playerMarkers)
+                if (m != null) m.gameObject.SetActive(false);
     }
 
     void Awake()
@@ -306,12 +355,9 @@ public class TDTableReceiverBase : MonoBehaviour
             var marker = _playerMarkers[i];
             if (marker == null) continue;
 
-            if (!_playerActive[i]) { marker.gameObject.SetActive(false); continue; }
+            if (!_playerActive[i] || !_playersVisible) { marker.gameObject.SetActive(false); continue; }
 
             marker.gameObject.SetActive(true);
-            marker.localScale = _arenaPlane == ArenaPlane.XY
-                ? new Vector3(_playerMarkerRadius * 2f, _playerMarkerRadius * 2f, 1f)
-                : new Vector3(_playerMarkerRadius * 2f, _playerMarkerHeight * 0.5f, _playerMarkerRadius * 2f);
             marker.position = MarkerWorldPosition(_playerPos[i]);
         }
     }
@@ -463,7 +509,12 @@ public class TDTableReceiverBase : MonoBehaviour
             var sr = marker.GetComponent<SpriteRenderer>();
             if (sr != null)
             {
-                sr.color = PlayerColors[i];
+                if (_grayscaleShader != null)
+                {
+                    _playerMaterials[i]  = new Material(_grayscaleShader);
+                    sr.sharedMaterial    = _playerMaterials[i];
+                }
+                sr.color = Color.white; // sprite's own colours are already baked in
                 ConfigureSpriteOutline(marker, sr);
                 continue;
             }

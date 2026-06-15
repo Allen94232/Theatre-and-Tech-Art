@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 [AddComponentMenu("TD/Achroma/Coloring Floor Renderer")]
 [RequireComponent(typeof(Renderer))]
@@ -30,6 +31,12 @@ public class ColoringFloorRenderer : MonoBehaviour
     private bool _completed;
     private int  _resolution;
 
+    // Preloaded next-level data (sampled ahead of the transition to avoid mid-fade GPU stalls)
+    private Color32[]          _preloadGrayscale;
+    private Color32[]          _preloadColor;
+    private int[]              _preloadMask;
+    private AchromaGame2Level  _preloadLevel;
+
     public float CompletionRatio => _totalPaintable > 0 ? (float)_paintedCount / _totalPaintable : 0f;
 
     private void Awake()
@@ -47,6 +54,84 @@ public class ColoringFloorRenderer : MonoBehaviour
         }
     }
 
+    // Asynchronously samples both textures and builds the pixel mask for the given level.
+    // GPU readback is non-blocking; onComplete fires on the main thread when all data is ready.
+    // Call this while the current level is still visually displayed (e.g. during the hold pause).
+    public void PreloadNextLevel(AchromaGame2Level level, System.Action onComplete = null)
+    {
+        int res = maskResolution;
+        int pending = 2;
+        Color32[] grayResult = null, colorResult = null;
+
+        void TryFinalize()
+        {
+            if (--pending > 0) return;
+            // Capture locals for the background thread — avoids closure over mutable variables.
+            var grayCapture  = grayResult;
+            var colorCapture = colorResult;
+            var regions      = level.regions;
+            // Build the pixel mask on a background thread so the main thread (and player movement) stay responsive.
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var mask = new int[res * res];
+                for (int y = 0; y < res; y++)
+                {
+                    float v = (float)y / (res - 1);
+                    for (int x = 0; x < res; x++)
+                    {
+                        float u = (float)x / (res - 1);
+                        int   m = 0;
+                        if (regions != null)
+                            for (int r = 0; r < regions.Count; r++)
+                                if (IsPointInPolygon(new Vector2(u, v), regions[r].uvVertices))
+                                    m |= (1 << regions[r].playerSlot);
+                        mask[y * res + x] = m;
+                    }
+                }
+                // All fields written before onComplete fires, which sets _preloadReady = true on
+                // the caller side. Reads in Initialize() happen only after that flag is observed.
+                _preloadGrayscale = grayCapture;
+                _preloadColor     = colorCapture;
+                _preloadMask      = mask;
+                _preloadLevel     = level;
+                onComplete?.Invoke();
+            });
+        }
+
+        SampleAsync(level.grayscaleImage, res, data => { grayResult  = data; TryFinalize(); });
+        SampleAsync(level.coloredImage,   res, data => { colorResult = data; TryFinalize(); });
+    }
+
+    // Issues an async GPU readback for src scaled to resolution×resolution, calling onDone on completion.
+    // Falls back to the synchronous path if AsyncGPUReadback is unavailable or fails.
+    private void SampleAsync(Texture2D src, int resolution, System.Action<Color32[]> onDone)
+    {
+        if (src == null)
+        {
+            var blank = new Color32[resolution * resolution];
+            for (int i = 0; i < blank.Length; i++) blank[i] = new Color32(128, 128, 128, 255);
+            onDone(blank);
+            return;
+        }
+
+        var rt = RenderTexture.GetTemporary(resolution, resolution, 0, RenderTextureFormat.ARGB32);
+        Graphics.Blit(src, rt);
+        AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, req =>
+        {
+            RenderTexture.ReleaseTemporary(rt);
+            if (req.hasError)
+            {
+                Debug.LogWarning("[ColoringFloorRenderer] AsyncGPUReadback failed — using sync fallback");
+                onDone(SampleTextureToArray(src, resolution));
+                return;
+            }
+            var native = req.GetData<Color32>();
+            var pixels = new Color32[native.Length];
+            for (int i = 0; i < native.Length; i++) pixels[i] = native[i];
+            onDone(pixels);
+        });
+    }
+
     public void Initialize(AchromaGame2Level level)
     {
         _regions      = level.regions;
@@ -57,27 +142,36 @@ public class ColoringFloorRenderer : MonoBehaviour
 
         int res = _resolution;
 
-        _grayscalePixels = SampleTextureToArray(level.grayscaleImage, res);
-        _colorPixels     = SampleTextureToArray(level.coloredImage,   res);
-
-        // Build per-pixel allowed-player bitmask by testing each UV against all regions.
-        // Overlapping regions OR their slots so both players can paint the shared area.
-        // mask == 0: pixel belongs to no region — any player may paint it; still counts toward completion.
-        // This runs once per level load; the one-time cost is acceptable.
-        _pixelAllowedMask = new int[res * res];
-        _painted          = new bool[res * res];
-        _totalPaintable   = res * res; // every pixel counts toward completion
-
-        for (int y = 0; y < res; y++)
+        if (_preloadLevel == level && _preloadGrayscale != null)
         {
-            float v = (float)y / (res - 1);
-            for (int x = 0; x < res; x++)
+            // Fast path: use data sampled ahead of the transition (no GPU stall)
+            _grayscalePixels  = _preloadGrayscale;
+            _colorPixels      = _preloadColor;
+            _pixelAllowedMask = _preloadMask;
+            _preloadLevel     = null;
+            _preloadGrayscale = null;
+            _preloadColor     = null;
+            _preloadMask      = null;
+        }
+        else
+        {
+            // Slow path: sample textures and build mask now (one-time GPU readback stall)
+            _grayscalePixels  = SampleTextureToArray(level.grayscaleImage, res);
+            _colorPixels      = SampleTextureToArray(level.coloredImage,   res);
+            _pixelAllowedMask = new int[res * res];
+            for (int y = 0; y < res; y++)
             {
-                float u    = (float)x / (res - 1);
-                int   mask = BuildAllowedMask(new Vector2(u, v));
-                _pixelAllowedMask[y * res + x] = mask;
+                float v = (float)y / (res - 1);
+                for (int x = 0; x < res; x++)
+                {
+                    float u    = (float)x / (res - 1);
+                    _pixelAllowedMask[y * res + x] = BuildAllowedMask(new Vector2(u, v));
+                }
             }
         }
+
+        _painted        = new bool[res * res];
+        _totalPaintable = res * res;
 
         _outputPixels = (Color32[])_grayscalePixels.Clone();
 
@@ -90,7 +184,7 @@ public class ColoringFloorRenderer : MonoBehaviour
         }
 
         _outputTexture.SetPixels32(_outputPixels);
-        _outputTexture.Apply();
+        _outputTexture.Apply(false);
         AssignOutputTexture();
     }
 
@@ -121,9 +215,13 @@ public class ColoringFloorRenderer : MonoBehaviour
                 }
             }
         }
-        else
+        else if (_renderer != null)
         {
             _renderer.material.mainTexture = _outputTexture;
+        }
+        else
+        {
+            Debug.LogWarning("[ColoringFloorRenderer] AssignOutputTexture: no Renderer found — add a Renderer component to this GameObject.");
         }
     }
 
@@ -252,9 +350,7 @@ public class ColoringFloorRenderer : MonoBehaviour
         if (!_dirty || _outputTexture == null) return;
         _dirty = false;
         _outputTexture.SetPixels32(_outputPixels);
-        _outputTexture.Apply();
-        // SpriteRenderer needs a new Sprite object after every texture upload.
-        if (_spriteRenderer != null) AssignOutputTexture();
+        _outputTexture.Apply(false);
     }
 
     // Instantly fill all remaining pixels with the completed colour image.
@@ -264,7 +360,7 @@ public class ColoringFloorRenderer : MonoBehaviour
         _completed = true;
         System.Array.Copy(_colorPixels, _outputPixels, _colorPixels.Length);
         _outputTexture.SetPixels32(_outputPixels);
-        _outputTexture.Apply();
+        _outputTexture.Apply(false);
         AssignOutputTexture();
     }
 

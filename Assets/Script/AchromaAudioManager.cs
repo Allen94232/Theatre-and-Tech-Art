@@ -22,6 +22,16 @@ public class AchromaAudioManager : MonoBehaviour
     // Cue IDs match the cue numbers in your QLab workspace.
     // Leave a field empty to silently skip that trigger.
 
+    [Header("QLab – Story Cues")]
+    [Tooltip("Audio played during Story 1 (intro, before Game 1). Leave empty to skip.")]
+    [SerializeField] private string _qStory1 = "Story1_BGM";
+    [Tooltip("Audio played during Story 2 (between Game 1 and Game 2). Leave empty to skip.")]
+    [SerializeField] private string _qStory2 = "Story2_BGM";
+    [Tooltip("Audio played during Story 3 (between Game 2 and Game 3). Leave empty to skip.")]
+    [SerializeField] private string _qStory3 = "Story3_BGM";
+    [Tooltip("Audio played during Story 4 (ending, after Game 3). Leave empty to skip.")]
+    [SerializeField] private string _qStory4 = "Story4_BGM";
+
     [Header("QLab – Game 1 Cues")]
     [SerializeField] private string _q1Bgm      = "G1_BGM";
     [SerializeField] private string _q1Collect  = "G1_Collect";
@@ -66,6 +76,12 @@ public class AchromaAudioManager : MonoBehaviour
     [Tooltip("One-shot SFX source. Auto-created if left empty.")]
     [SerializeField] private AudioSource _sfxSource;
 
+    [Header("Native – Story Clips")]
+    [SerializeField] private AudioClip _nStory1Bgm;
+    [SerializeField] private AudioClip _nStory2Bgm;
+    [SerializeField] private AudioClip _nStory3Bgm;
+    [SerializeField] private AudioClip _nStory4Bgm;
+
     [Header("Native – Game 1 Clips")]
     [SerializeField] private AudioClip _n1Bgm;
     [SerializeField] private AudioClip _n1Collect;
@@ -95,7 +111,7 @@ public class AchromaAudioManager : MonoBehaviour
     private OscClient _client;
 
     // Tracks the active BGM state to suppress redundant transitions in both modes.
-    private enum BgmState { None, Game1, Game2, Game3Repair, Game3Counter }
+    private enum BgmState { None, Story1, Story2, Story3, Story4, Game1, Game2, Game3Repair, Game3Counter }
     private BgmState _bgmState = BgmState.None;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -118,6 +134,43 @@ public class AchromaAudioManager : MonoBehaviour
         mode = useQLab ? AudioMode.QLab : AudioMode.UnityNative;
         if (mode == AudioMode.QLab && _client == null) InitQlab();
         Log($"Mode → {mode}");
+    }
+
+    // ── Story ─────────────────────────────────────────────────────────────────
+
+    public void Story_OnEnter(TDAchromaFlowManager.AchromaState state)
+    {
+        BgmState  bState;
+        string    cueId;
+        AudioClip clip;
+        switch (state)
+        {
+            case TDAchromaFlowManager.AchromaState.Story1: bState = BgmState.Story1; cueId = _qStory1; clip = _nStory1Bgm; break;
+            case TDAchromaFlowManager.AchromaState.Story2: bState = BgmState.Story2; cueId = _qStory2; clip = _nStory2Bgm; break;
+            case TDAchromaFlowManager.AchromaState.Story3: bState = BgmState.Story3; cueId = _qStory3; clip = _nStory3Bgm; break;
+            case TDAchromaFlowManager.AchromaState.Story4: bState = BgmState.Story4; cueId = _qStory4; clip = _nStory4Bgm; break;
+            default: return;
+        }
+        if (_bgmState == bState) return;
+        _bgmState = bState;
+        NativeSwitchBgm(clip);
+        CueTrigger(cueId);
+    }
+
+    public void Story_OnExit(TDAchromaFlowManager.AchromaState state)
+    {
+        string cueId;
+        switch (state)
+        {
+            case TDAchromaFlowManager.AchromaState.Story1: cueId = _qStory1; break;
+            case TDAchromaFlowManager.AchromaState.Story2: cueId = _qStory2; break;
+            case TDAchromaFlowManager.AchromaState.Story3: cueId = _qStory3; break;
+            case TDAchromaFlowManager.AchromaState.Story4: cueId = _qStory4; break;
+            default: return;
+        }
+        _bgmState = BgmState.None;
+        NativeStopBgm();
+        CueStop(cueId);
     }
 
     // ── Game 1 ────────────────────────────────────────────────────────────────

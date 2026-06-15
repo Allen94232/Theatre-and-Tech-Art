@@ -7,6 +7,14 @@ using UnityEngine.UI;
 // ─── Data classes ────────────────────────────────────────────────────────────
 
 [System.Serializable]
+public struct PercentColorThreshold
+{
+    [Tooltip("Apply this color when completion ratio is >= this value")]
+    [Range(0f, 1f)] public float minRatio;
+    public Color color;
+}
+
+[System.Serializable]
 public class AchromaGame2Region
 {
     [Tooltip("Display name shown in the Scene view label and Inspector")]
@@ -31,6 +39,9 @@ public class AchromaGame2Level
     [Tooltip("Fully coloured city image — shown on the wall as reference and revealed on floor at completion")]
     public Texture2D coloredImage;
 
+    [Tooltip("Color for the level indicator text (e.g. 1/3) while this level is active")]
+    public Color levelTextColor = Color.white;
+
     [Tooltip("One entry per colour region. Define each region's shape by editing its UV polygon in the Scene view.")]
     public List<AchromaGame2Region> regions = new List<AchromaGame2Region>();
 }
@@ -45,8 +56,8 @@ public class AchromaGame2Controller : MonoBehaviour
     [SerializeField] private TDAchromaFlowManager   _flowManager;
     [SerializeField] private AchromaAudioManager    _audioManager;
     [SerializeField] private ColoringFloorRenderer  _floorRenderer;
-    [Tooltip("Optional: wall-side Renderer whose mainTexture will be set to each level's coloured reference image")]
-    [SerializeField] private Renderer _wallRenderer;
+    [Tooltip("Optional: SpriteRenderer on the wall — its sprite is swapped to each level's coloured reference image")]
+    [SerializeField] private SpriteRenderer _wallSpriteRenderer;
 
     // Read by the custom Editor to project UV polygons onto the floor in Scene view.
     public ColoringFloorRenderer FloorRenderer => _floorRenderer;
@@ -62,21 +73,33 @@ public class AchromaGame2Controller : MonoBehaviour
     [Tooltip("Fraction of total paintable area that counts as completion (0.9 = 90%)")]
     [Range(0.5f, 1f)] public float completionThreshold = 0.9f;
 
-    [Tooltip("Seconds to hold the fully revealed image before advancing to the next level")]
-    public float levelCompletionPause = 2f;
+    [Tooltip("Seconds to hold the fully revealed colour image before the crossfade begins")]
+    public float levelHoldDuration = 2f;
+    [Tooltip("Duration in seconds for both the fade-out and fade-in between levels")]
+    public float fadeDuration = 0.5f;
 
     [Header("UI")]
-    [Tooltip("TextMeshPro text on the wall screen — shows restoration percentage during Game 2")]
+    [Tooltip("TextMeshPro text showing the restoration percentage (e.g. 90%)")]
     [SerializeField] private TMP_Text _completionText;
+    [Tooltip("TextMeshPro text showing the current level indicator (e.g. 1/3). Hidden when there is only one level.")]
+    [SerializeField] private TMP_Text _levelText;
 
-    [Header("Floor Effects")]
-    [Tooltip("Full-screen Image on the Floor Canvas for the completion flash. Set Color Alpha to 0 in editor.")]
-    [SerializeField] private Image _floorFlashOverlay;
+    [Tooltip("Text colour at different completion ratios. Evaluated highest-minRatio-first; add entries in any order.")]
+    public List<PercentColorThreshold> completionTextColors = new List<PercentColorThreshold>();
+
+    [Header("Hint")]
+    [SerializeField] private TMP_Text _hintText;
+
+    [Header("Transition")]
+    [Tooltip("SpriteRenderer on the floor background object — faded during level transitions")]
+    [SerializeField] private SpriteRenderer _floorBgRenderer;
 
     // ── Runtime state ──
-    private bool _gameRunning       = false;
-    private int  _currentLevelIndex = 0;
-    private bool _levelCompleting   = false;
+    private bool           _gameRunning        = false;
+    private int            _currentLevelIndex  = 0;
+    private bool           _levelCompleting    = false;
+    private volatile bool  _preloadReady       = true;
+    private SpriteRenderer _floorCanvasRenderer;
 
     // Per-player previous UV position for stroke interpolation (avoids gaps at fast movement speed).
     private readonly Vector2[] _prevPlayerUV    = new Vector2[4];
@@ -93,6 +116,16 @@ public class AchromaGame2Controller : MonoBehaviour
         if (_flowManager   == null) _flowManager   = FindFirstObjectByType<TDAchromaFlowManager>();
         if (_audioManager  == null) _audioManager  = FindFirstObjectByType<AchromaAudioManager>();
         if (_floorRenderer == null) _floorRenderer = FindFirstObjectByType<ColoringFloorRenderer>();
+        if (_floorRenderer != null) _floorCanvasRenderer = _floorRenderer.GetComponent<SpriteRenderer>();
+    }
+
+    // Triggered when this GameObject becomes active (during ApplyTransition, while overlay is still black).
+    // Kicks off async GPU preload so the pixel data is ready before StartGame() calls LoadLevel(0).
+    // The FlowManager's blackHold gives enough time for the async readback to complete.
+    private void OnEnable()
+    {
+        if (levels == null || levels.Count == 0 || _floorRenderer == null) return;
+        _floorRenderer.PreloadNextLevel(levels[0]);
     }
 
     private void Update()
@@ -129,6 +162,10 @@ public class AchromaGame2Controller : MonoBehaviour
         }
 
         _audioManager?.Game2_OnGameStart();
+
+        if (_hintText  != null) _hintText.gameObject.SetActive(true);
+        if (_levelText != null) _levelText.gameObject.SetActive(levels.Count > 1);
+
         LoadLevel(_currentLevelIndex);
         Debug.Log("[Game2] StartGame");
     }
@@ -145,8 +182,10 @@ public class AchromaGame2Controller : MonoBehaviour
             _receiver.OnPlayerLeft   -= HandlePlayerLeft;
         }
 
-        if (_completionText    != null) _completionText.text    = string.Empty;
-        if (_floorFlashOverlay != null) _floorFlashOverlay.color = new Color(0f, 0f, 0f, 0f);
+        if (_completionText != null) _completionText.text = string.Empty;
+        if (_hintText       != null) _hintText.gameObject.SetActive(false);
+        if (_levelText      != null) _levelText.gameObject.SetActive(false);
+
         Debug.Log("[Game2] EndGame");
     }
 
@@ -204,11 +243,20 @@ public class AchromaGame2Controller : MonoBehaviour
         // Reset stroke origins — Initialize() replaces the sprite and may shift bounds.
         System.Array.Clear(_hasPrevPlayerUV, 0, _hasPrevPlayerUV.Length);
 
+        // Uses the fast path (preloaded pixel data) if OnEnable's async preload completed in time;
+        // falls back to the synchronous path otherwise. blackHold in the transition ensures preload is done.
         if (_floorRenderer != null)
             _floorRenderer.Initialize(level);
 
-        if (_wallRenderer != null && level.coloredImage != null)
-            _wallRenderer.material.mainTexture = level.coloredImage;
+        if (_wallSpriteRenderer != null && level.coloredImage != null)
+        {
+            var tex = level.coloredImage;
+            _wallSpriteRenderer.sprite = Sprite.Create(
+                tex,
+                new Rect(0, 0, tex.width, tex.height),
+                new Vector2(0.5f, 0.5f),
+                100f);
+        }
 
         Debug.Log($"[Game2] Level {index + 1}/{levels.Count} loaded.");
     }
@@ -224,20 +272,40 @@ public class AchromaGame2Controller : MonoBehaviour
     {
         _levelCompleting = true;
 
+        // 1. Instantly reveal any remaining unpainted pixels
         if (_floorRenderer != null)
             _floorRenderer.ShowCompleted();
 
-        StartCoroutine(FloorCompletionFlashCo());
         _audioManager?.Game2_OnLevelComplete();
-        Debug.Log($"[Game2] Level {_currentLevelIndex + 1} complete. Waiting {levelCompletionPause}s.");
-        yield return new WaitForSeconds(levelCompletionPause);
+        Debug.Log($"[Game2] Level {_currentLevelIndex + 1} complete. Holding {levelHoldDuration}s then crossfading.");
+
+        // 2. Kick off async GPU preload for the next level — returns immediately, no main-thread stall.
+        //    The callback sets _preloadReady=true a few frames later when data arrives.
+        int nextIndex = _currentLevelIndex + 1;
+        _preloadReady = nextIndex >= levels.Count; // no next level → already "ready"
+        if (nextIndex < levels.Count && _floorRenderer != null)
+            _floorRenderer.PreloadNextLevel(levels[nextIndex], () => _preloadReady = true);
+
+        // 3. Hold the fully revealed image; also wait until preload completes (usually finishes
+        //    within 2-3 frames, well before levelHoldDuration expires).
+        float holdEnd = Time.time + levelHoldDuration;
+        yield return new WaitUntil(() => Time.time >= holdEnd && _preloadReady);
 
         _currentLevelIndex++;
+        bool hasNextLevel = _currentLevelIndex < levels.Count;
 
-        if (_currentLevelIndex < levels.Count)
+        // 4. Fade out floor + wall together
+        yield return StartCoroutine(FadeTransitionCo(1f, 0f));
+
+        // 5. Swap content while invisible
+        if (hasNextLevel)
         {
-            _levelCompleting = false;
             LoadLevel(_currentLevelIndex);
+            SetTransitionAlpha(0f); // re-enforce alpha=0 after sprite reassignment in LoadLevel
+
+            // 6. Fade in the new level
+            yield return StartCoroutine(FadeTransitionCo(0f, 1f));
+            _levelCompleting = false;
         }
         else
         {
@@ -246,37 +314,70 @@ public class AchromaGame2Controller : MonoBehaviour
         }
     }
 
+    private IEnumerator FadeTransitionCo(float from, float to)
+    {
+        float elapsed = 0f;
+        float dur     = Mathf.Max(fadeDuration, 0.01f);
+        while (elapsed < dur)
+        {
+            elapsed += Time.deltaTime;
+            float a = Mathf.Lerp(from, to, elapsed / dur);
+            SetTransitionAlpha(a);
+            yield return null;
+        }
+        SetTransitionAlpha(to);
+    }
+
+    private void SetTransitionAlpha(float a)
+    {
+        if (_floorCanvasRenderer != null)
+        {
+            Color c = _floorCanvasRenderer.color; c.a = a; _floorCanvasRenderer.color = c;
+        }
+        if (_floorBgRenderer != null)
+        {
+            Color c = _floorBgRenderer.color; c.a = a; _floorBgRenderer.color = c;
+        }
+        if (_wallSpriteRenderer != null)
+        {
+            Color c = _wallSpriteRenderer.color; c.a = a; _wallSpriteRenderer.color = c;
+        }
+    }
+
     // ── Completion UI ──────────────────────────────────────────────────────
 
     private void UpdateCompletionUI()
     {
-        if (_completionText == null) return;
         float ratio = _floorRenderer != null ? _floorRenderer.CompletionRatio : 0f;
-        int pct = Mathf.RoundToInt(ratio * 100f);
-        _completionText.text = levels.Count > 1
-            ? $"{_currentLevelIndex + 1} / {levels.Count}\n{pct}%"
-            : $"{pct}%";
-    }
+        int   pct   = Mathf.RoundToInt(ratio * 100f);
 
-    // ── Floor Effects ──────────────────────────────────────────────────────
+        // Percentage text
+        if (_completionText != null)
+            _completionText.text = $"{pct}%";
 
-    // Warm white burst when the city image is fully revealed.
-    private IEnumerator FloorCompletionFlashCo()
-    {
-        if (_floorFlashOverlay == null) yield break;
-        _floorFlashOverlay.color = new Color(1f, 0.97f, 0.8f, 0.9f);
-        yield return new WaitForSeconds(0.06f);
-        float elapsed  = 0f;
-        float fadeTime = 1.0f;
-        while (elapsed < fadeTime)
+        // Level indicator text with per-level color
+        if (_levelText != null && levels.Count > 1 && _currentLevelIndex < levels.Count)
         {
-            elapsed += Time.deltaTime;
-            Color c = _floorFlashOverlay.color;
-            c.a = Mathf.Lerp(0.9f, 0f, elapsed / fadeTime);
-            _floorFlashOverlay.color = c;
-            yield return null;
+            _levelText.text  = $"{_currentLevelIndex + 1} / {levels.Count}";
+            _levelText.color = levels[_currentLevelIndex].levelTextColor;
         }
-        _floorFlashOverlay.color = new Color(0f, 0f, 0f, 0f);
+
+        // Completion color applied to both percentage and hint text
+        if (completionTextColors != null && completionTextColors.Count > 0)
+        {
+            Color best      = completionTextColors[0].color;
+            float bestRatio = -1f;
+            foreach (var entry in completionTextColors)
+            {
+                if (ratio >= entry.minRatio && entry.minRatio >= bestRatio)
+                {
+                    bestRatio = entry.minRatio;
+                    best      = entry.color;
+                }
+            }
+            if (_completionText != null) _completionText.color = best;
+            if (_hintText       != null) _hintText.color       = best;
+        }
     }
 
     // ── Player events ──────────────────────────────────────────────────────

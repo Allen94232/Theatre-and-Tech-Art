@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
+using UnityEngine.UI;
 
 [AddComponentMenu("TD/Achroma/Game 1 Controller")]
 public class AchromaGame1Controller : MonoBehaviour
@@ -23,6 +24,8 @@ public class AchromaGame1Controller : MonoBehaviour
     [SerializeField] private int _totalBottlesRequired = 20;
     [Tooltip("Maximum simultaneous bottles on the floor")]
     [SerializeField] private int _maxActiveBottles = 8;
+    [Tooltip("Minimum world-unit distance from any active player when spawning a bottle. Set to 0 to disable.")]
+    [SerializeField] private float _playerExclusionRadius = 0.6f;
 
     [Header("Visual")]
     [Tooltip("Sprites for each bottle color: index 0=red, 1=blue, 2=green, 3=yellow. Leave empty to use a procedural circle.")]
@@ -33,8 +36,14 @@ public class AchromaGame1Controller : MonoBehaviour
     [SerializeField] private int _bottleSortingOrder = 1;
 
     [Header("UI")]
-    [SerializeField] private UnityEngine.UI.Slider _progressSlider;
+    [SerializeField] private Slider   _progressSlider;
     [SerializeField] private TMP_Text _progressText;
+    [Tooltip("Hue offset (0-1) for the rainbow progress colour. 0 = starts red, 0.33 = starts green, etc.")]
+    [Range(0f, 1f)]
+    [SerializeField] private float _progressHueOffset = 0f;
+
+    [Header("Hint")]
+    [SerializeField] private TMP_Text _hintText;
 
     // Final player colors (red, blue, green, yellow) — matches TDTableReceiverBase.PlayerColors
     private static readonly Color[] FinalPlayerColors =
@@ -48,10 +57,11 @@ public class AchromaGame1Controller : MonoBehaviour
     // TDAchromaFlowManager polls this to detect when the round ends.
     public bool IsRoundRunning => _gameRunning;
 
-    private bool  _gameRunning;
-    private int   _bottlesCollected;
-    private float _spawnTimer;
+    private bool   _gameRunning;
+    private int    _bottlesCollected;
+    private float  _spawnTimer;
     private Sprite _bottleSprite;
+    private Image  _sliderFillImage;
 
     private struct BottleData
     {
@@ -72,6 +82,8 @@ public class AchromaGame1Controller : MonoBehaviour
         if (_flowManager   == null) _flowManager   = FindFirstObjectByType<TDAchromaFlowManager>();
         if (_audioManager  == null) _audioManager  = FindFirstObjectByType<AchromaAudioManager>();
         _bottleSprite = BuildCircleSprite();
+        if (_progressSlider != null && _progressSlider.fillRect != null)
+            _sliderFillImage = _progressSlider.fillRect.GetComponent<Image>();
     }
 
     private void Update()
@@ -102,9 +114,9 @@ public class AchromaGame1Controller : MonoBehaviour
 
         ClearAllBottles();
 
-        // All players start white
+        // All players start fully desaturated (grayscale)
         for (int i = 0; i < 4; i++)
-            _receiver?.SetPlayerMarkerColor(i, Color.white);
+            _receiver?.SetPlayerMarkerSaturation(i, 0f);
 
         if (_progressSlider != null)
         {
@@ -120,6 +132,9 @@ public class AchromaGame1Controller : MonoBehaviour
         }
 
         _audioManager?.Game1_OnGameStart();
+
+        if (_hintText != null) _hintText.gameObject.SetActive(true);
+
         Debug.Log("[Game1] StartGame");
     }
 
@@ -130,9 +145,9 @@ public class AchromaGame1Controller : MonoBehaviour
 
         ClearAllBottles();
 
-        // Snap all players to their final distinct colors
+        // Restore full saturation so players carry their natural sprite colours into Story 2
         for (int i = 0; i < 4; i++)
-            _receiver?.SetPlayerMarkerColor(i, FinalPlayerColors[i]);
+            _receiver?.SetPlayerMarkerSaturation(i, 1f);
 
         if (_receiver != null)
         {
@@ -141,6 +156,9 @@ public class AchromaGame1Controller : MonoBehaviour
         }
 
         _audioManager?.Game1_OnGameComplete();
+
+        if (_hintText != null) _hintText.gameObject.SetActive(false);
+
         Debug.Log("[Game1] EndGame");
     }
 
@@ -163,7 +181,14 @@ public class AchromaGame1Controller : MonoBehaviour
         if (spawnMin.x >= spawnMax.x || spawnMin.y >= spawnMax.y) return;
 
         int     colorIndex = Random.Range(0, 4);
-        Vector2 arenaPos   = new Vector2(Random.Range(spawnMin.x, spawnMax.x), Random.Range(spawnMin.y, spawnMax.y));
+        Vector2 arenaPos   = Vector2.zero;
+        bool    posFound   = false;
+        for (int attempt = 0; attempt < 15; attempt++)
+        {
+            Vector2 c = new Vector2(Random.Range(spawnMin.x, spawnMax.x), Random.Range(spawnMin.y, spawnMax.y));
+            if (!IsTooCloseToAnyPlayer(c)) { arenaPos = c; posFound = true; break; }
+        }
+        if (!posFound) return;
 
         var go = new GameObject("Bottle_" + colorIndex);
         go.layer = LayerMask.NameToLayer("Floor");
@@ -231,18 +256,30 @@ public class AchromaGame1Controller : MonoBehaviour
     private void CheckPickups()
     {
         if (_receiver == null) return;
-        float halfW = _bottleWorldSize.x * 0.5f;
-        float halfH = _bottleWorldSize.y * 0.5f;
 
         for (int slot = 0; slot < 4; slot++)
         {
             if (!_receiver.IsPlayerActive(slot)) continue;
-            if (!_receiver.TryGetPlayerInfo(slot, out Vector2 playerPos, out float _)) continue;
+
+            bool hasSpriteBounds = _receiver.TryGetPlayerBounds(slot, out Rect playerBounds);
+            if (!hasSpriteBounds)
+            {
+                // Fallback: player-center inside bottle rectangle
+                if (!_receiver.TryGetPlayerInfo(slot, out Vector2 playerPos, out float _)) continue;
+                float halfW = _bottleWorldSize.x * 0.5f;
+                float halfH = _bottleWorldSize.y * 0.5f;
+                for (int i = _activeBottles.Count - 1; i >= 0; i--)
+                {
+                    Vector2 diff = playerPos - _activeBottles[i].arenaPos;
+                    if (Mathf.Abs(diff.x) <= halfW && Mathf.Abs(diff.y) <= halfH)
+                    { CollectBottle(i); break; }
+                }
+                continue;
+            }
 
             for (int i = _activeBottles.Count - 1; i >= 0; i--)
             {
-                Vector2 diff = playerPos - _activeBottles[i].arenaPos;
-                if (Mathf.Abs(diff.x) <= halfW && Mathf.Abs(diff.y) <= halfH)
+                if (playerBounds.Overlaps(GetBottleRect(_activeBottles[i])))
                 {
                     CollectBottle(i);
                     break; // one bottle per player per frame
@@ -265,12 +302,12 @@ public class AchromaGame1Controller : MonoBehaviour
             EndGame();
     }
 
-    // Color lerps from white → final color as progress fills
+    // Saturation lerps 0→1 as bottles are collected, gradually revealing each robot's natural colour.
     private void UpdatePlayerColors()
     {
         float t = Mathf.Clamp01((float)_bottlesCollected / Mathf.Max(1, _totalBottlesRequired));
         for (int i = 0; i < 4; i++)
-            _receiver?.SetPlayerMarkerColor(i, Color.Lerp(Color.white, FinalPlayerColors[i], t));
+            _receiver?.SetPlayerMarkerSaturation(i, t);
     }
 
     private void UpdateUI()
@@ -280,9 +317,34 @@ public class AchromaGame1Controller : MonoBehaviour
 
         if (_progressText != null)
             _progressText.text = $"{_bottlesCollected} / {_totalBottlesRequired}";
+
+        {
+            float ratio  = Mathf.Clamp01((float)_bottlesCollected / Mathf.Max(1, _totalBottlesRequired));
+            float hue    = Mathf.Repeat(_progressHueOffset + ratio, 1f);
+            Color gray   = new Color(0.6f, 0.6f, 0.6f, 1f);
+            Color vivid  = Color.HSVToRGB(hue, 1f, 1f);
+            Color tinted = Color.Lerp(gray, vivid, ratio);
+            if (_progressText    != null) _progressText.color    = tinted;
+            if (_sliderFillImage != null) _sliderFillImage.color = tinted;
+            if (_hintText        != null) _hintText.color        = tinted;
+        }
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private Rect GetBottleRect(BottleData b)
+    {
+        if (b.renderer != null)
+        {
+            var bounds = b.renderer.bounds;
+            return _arenaIsXZPlane
+                ? new Rect(bounds.min.x, bounds.min.z, bounds.size.x, bounds.size.z)
+                : new Rect(bounds.min.x, bounds.min.y, bounds.size.x, bounds.size.y);
+        }
+        float halfW = _bottleWorldSize.x * 0.5f;
+        float halfH = _bottleWorldSize.y * 0.5f;
+        return new Rect(b.arenaPos.x - halfW, b.arenaPos.y - halfH, _bottleWorldSize.x, _bottleWorldSize.y);
+    }
 
     private bool TryGetFloorImageBounds(out Vector2 min, out Vector2 max)
     {
@@ -308,11 +370,22 @@ public class AchromaGame1Controller : MonoBehaviour
         _activeBottles.Clear();
     }
 
+    private bool IsTooCloseToAnyPlayer(Vector2 worldPos)
+    {
+        if (_receiver == null || _playerExclusionRadius <= 0f) return false;
+        for (int slot = 0; slot < 4; slot++)
+        {
+            if (!_receiver.IsPlayerActive(slot)) continue;
+            if (!_receiver.TryGetPlayerInfo(slot, out Vector2 playerPos, out float _)) continue;
+            if (Vector2.Distance(worldPos, playerPos) < _playerExclusionRadius) return true;
+        }
+        return false;
+    }
+
     private void HandlePlayerJoined(int slot)
     {
-        // Immediately apply the current color progress to the newly joined player
         float t = Mathf.Clamp01((float)_bottlesCollected / Mathf.Max(1, _totalBottlesRequired));
-        _receiver?.SetPlayerMarkerColor(slot, Color.Lerp(Color.white, FinalPlayerColors[slot], t));
+        _receiver?.SetPlayerMarkerSaturation(slot, t);
     }
 
     private void HandlePlayerLeft(int slot) { }
