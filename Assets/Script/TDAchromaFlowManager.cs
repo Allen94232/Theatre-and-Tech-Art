@@ -109,8 +109,6 @@ public class TDAchromaFlowManager : MonoBehaviour
         if (_receiver == null)
         {
             _receiver = FindFirstObjectByType<TDTableReceiverBase>();
-            if (_receiver == null) _receiver = FindFirstObjectByType<TDTableReceiver>();
-            if (_receiver == null) _receiver = FindFirstObjectByType<TDTableReceiverAchroma>();
 
             if (_receiver == null)
             {
